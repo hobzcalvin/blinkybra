@@ -22,9 +22,18 @@
 #define soundVPin A0
 #define soundPin A1
 
-#define width 13
+#define width 12
 // -1 indicates no actual pixel at that virtual location.
 int8_t nodeLayout[] = {
+  -1,  1, -1, -1, -1, -1,   -1, -1, -1, -1, 27, -1,
+   0, -1, 10, -1, -1, -1,   -1, -1, -1, 17, -1, 26,
+  -1,  9, -1, 11, -1, -1,   -1, -1, 16, -1, 18, -1,
+   2, -1,  8, -1, 12, -1,   -1, 15, -1, 19, -1, 25,
+  -1,  3, -1,  7, -1, 13,   14, -1, 20, -1, 24, -1,
+  -1, -1,  4, -1,  6, -1,   -1, 21, -1, 23, -1, -1,
+  -1, -1, -1,  5, -1, -1,   -1, -1, 22, -1, -1, -1,
+};
+/*int8_t nodeLayout[] = {
   -1,  1, -1, -1, -1, -1,  -1,  -1, -1, -1, -1, 27, -1,
    0, -1, 10, -1, -1, -1,  -1,  -1, -1, -1, 17, -1, 26,
   -1,  9, -1, 11, -1, -1,  -1,  -1, -1, 16, -1, 18, -1,
@@ -32,7 +41,7 @@ int8_t nodeLayout[] = {
   -1,  3, -1,  7, -1, 13,  -1,  14, -1, 20, -1, 24, -1,
   -1, -1,  4, -1,  6, -1,  -1,  -1, 21, -1, 23, -1, -1,
   -1, -1, -1,  5, -1, -1,  -1,  -1, -1, 22, -1, -1, -1,
-};
+};*/
 
 
 #define numNodes (sizeof(nodeLayout) / sizeof(int8_t))
@@ -261,13 +270,26 @@ void loop() {
   }
 }
 
-#define BANDS 4
+#define SPECTRUM_HEIGHT 5
+int8_t spectrumLayout[] = {
+   5,  4,  3,  2, -1,
+   6,  7,  8,  9,  0,
+  13, 12, 11, 10,  1,
+  14, 15, 16, 17, 27,
+  21, 20, 19, 18, 26,
+  22, 23, 24, 25, -1,
+};
+#define BANDS 6
 void spectrum() {
-  byte im[128];
-  byte data[128];
+  char im[128];
+  char data[128];
   int i;
   int val;
   uint16_t bands[BANDS];
+
+  long avg = 0;
+
+
 
   WHILE_MODE(30) {
 
@@ -278,14 +300,35 @@ void spectrum() {
     };
 
     fix_fft(data,im,7,0);
-    for (i=0; i< 64; i++) {       // In the current design, 60Hz and noise
-      data[i] = sqrt(data[i] * data[i] + im[i] * im[i]);//in general are a problem. Future designs
-      Serial.print(data[i]);
-      Serial.print(",");
-//      TV.draw_line(i+x,lastpass[i],i+x,ylim,0);    // and code may fix this, but for now, I
-//      TV.draw_line(i+x,ylim,i+x,ylim-data[i],1);    // skip displaying the 0-500hz band completely.
+
+    memset(bands, 0, sizeof(bands));
+    for (i=0; i < 40; i++) {       // In the current design, 60Hz and noise
+      // XXX
+      bands[i / 6] += sqrt(data[i] * data[i] + im[i] * im[i]);//in general are a problem. Future designs
     }
-    Serial.println(".");
+
+    uint16_t bandMax = 0;
+    for (i = 0; i < BANDS; i++) {
+      if (bands[i] > bandMax) {
+        bandMax = bands[i];
+      }
+    }
+
+    if (!avg) {
+      avg = bandMax * 2;
+    } else {
+      avg += ((long)bandMax - avg) / 20;
+    }
+
+    for (i = 0; i < BANDS; i++) {
+      int h = bands[i] * SPECTRUM_HEIGHT / avg / 2;
+      for (int j = 0; j < SPECTRUM_HEIGHT; j++) {
+        if (spectrumLayout[i * SPECTRUM_HEIGHT + j] >= 0) {
+          strip.set(spectrumLayout[i * SPECTRUM_HEIGHT + j], 0, 0, (h > j) ? 127 : 0);
+        }
+      }
+    }
+    strip.show();
   }
 }
 
