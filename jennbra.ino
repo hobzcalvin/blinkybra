@@ -22,7 +22,7 @@
 #define soundVPin A0
 #define soundPin A1
 
-#define width 12
+#define WIDTH 12
 // -1 indicates no actual pixel at that virtual location.
 int8_t nodeLayout[] = {
   -1,  1, -1, -1, -1, -1,   -1, -1, -1, -1, 27, -1,
@@ -45,7 +45,7 @@ int8_t nodeLayout[] = {
 
 
 #define numNodes (sizeof(nodeLayout) / sizeof(int8_t))
-#define height (numNodes / width)
+#define HEIGHT (numNodes / WIDTH)
 
 typedef void (*mode_func)(void);
 
@@ -175,17 +175,17 @@ void setup() {
   // parameters are SPI data and clock pins:
   strip = LPD8806(realNumNodes, dataPin, clockPin);
   Serial.begin(9600);
-//  printArray(nodeLayout, numNodes, width);
+//  printArray(nodeLayout, numNodes, WIDTH);
 
   int8_t tempLayout[numNodes];
-  for (int i = 0; i < width; i++) {
-    for (int j = 0; j < height; j++) {
-      tempLayout[height - 1 - j + i * height] = nodeLayout[i + j * width];
+  for (int i = 0; i < WIDTH; i++) {
+    for (int j = 0; j < HEIGHT; j++) {
+      tempLayout[HEIGHT - 1 - j + i * HEIGHT] = nodeLayout[i + j * WIDTH];
     }
   }
   memcpy(nodeLayout, tempLayout, numNodes * sizeof(int8_t));
 
-//  printArray(nodeLayout, numNodes, height);
+//  printArray(nodeLayout, numNodes, HEIGHT);
 
   mycolor = strip.Color(127, 0, 0);
 
@@ -221,18 +221,18 @@ void setup() {
 }
 
 void set(uint8_t x, uint8_t y, uint32_t color) {
-  if (nodeLayout[x * height + y] >= 0) {
+  if (nodeLayout[x * HEIGHT + y] >= 0) {
 /*    Serial.print(x);
     Serial.print(",");
     Serial.print(y);
     Serial.print(" translates to ");
-    Serial.println(nodeLayout[x * height + y]);*/
-    strip.setPixelColor(nodeLayout[x * height + y], color);
+    Serial.println(nodeLayout[x * HEIGHT + y]);*/
+    strip.setPixelColor(nodeLayout[x * HEIGHT + y], color);
   }
 }
 
 void fillCol(uint8_t col, uint32_t color) {
-  for (int j = 0; j < height; j++) {
+  for (int j = 0; j < HEIGHT; j++) {
     set(col, j, color);
   }
 }
@@ -302,9 +302,10 @@ void spectrum() {
     fix_fft(data,im,7,0);
 
     memset(bands, 0, sizeof(bands));
-    for (i=0; i < 40; i++) {       // In the current design, 60Hz and noise
+    for (i=0; i < 42; i++) {       // In the current design, 60Hz and noise
       // XXX
       bands[i / 6] += sqrt(data[i] * data[i] + im[i] * im[i]);//in general are a problem. Future designs
+      // START HERE: Lots of frequencies stuck at the bottom band. Divide that one more??
     }
 
     uint16_t bandMax = 0;
@@ -321,10 +322,18 @@ void spectrum() {
     }
 
     for (i = 0; i < BANDS; i++) {
-      int h = bands[i] * SPECTRUM_HEIGHT / avg / 2;
-      for (int j = 0; j < SPECTRUM_HEIGHT; j++) {
-        if (spectrumLayout[i * SPECTRUM_HEIGHT + j] >= 0) {
-          strip.set(spectrumLayout[i * SPECTRUM_HEIGHT + j], 0, 0, (h > j) ? 127 : 0);
+      // XXX
+      int ledHeight = (i == 0 || i == 5) ? 4 : 5;
+      long height = (long)bands[i] * (long)ledHeight * 0xFF / avg * .8;
+      for (int j = 0; j < ledHeight; j++) {
+        byte value = gamma(min(height, 0xFF));
+        strip.set(spectrumLayout[i * SPECTRUM_HEIGHT + j],
+          (i <= 1 || i == 5) ? value : 0,
+          (i >= 1 && i <= 3) ? value : 0,
+          (i >= 3) ? value : 0);
+        height -= 0xFF;
+        if (height < 0) {
+          height = 0;
         }
       }
     }
@@ -352,8 +361,8 @@ void wheelPlus() {
   }*/
   int j = 0;
   WHILE_MODE(30) {
-    for (int i = 0; i < width; i++) {
-      fillCol(i, Wheel( ((i * 384 / width + j) % 384)));
+    for (int i = 0; i < WIDTH; i++) {
+      fillCol(i, Wheel( ((i * 384 / WIDTH + j) % 384)));
     }
     showFor(5);
     j++;
@@ -386,12 +395,12 @@ void nightRide() {
 
 
   WHILE_MODE(5) {
-    for (int i = 0; i < width; i++) {
+    for (int i = 0; i < WIDTH; i++) {
       fillCol(i, mycolor);
       showFor(50);
       fillCol(i, strip.Color(0, 0, 0));
     }
-    for (int i = width - 2; i > 0; i--) {
+    for (int i = WIDTH - 2; i > 0; i--) {
       fillCol(i, mycolor);
       showFor(50);
       fillCol(i, strip.Color(0, 0, 0));
