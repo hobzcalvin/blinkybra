@@ -53,13 +53,34 @@ uint32_t nodes[numNodes] = { 0 };
 typedef void (*mode_func)(void);
 
 volatile bool mode_running = true;
-volatile bool next_mode = false;
+volatile int8_t curMode;
 volatile byte speed = 0;
-#define NUM_SPEEDS 6
-volatile byte timerDoubler = 0;
+volatile byte timerDoubler;
 
 #define FULL 255
 #define MAXHUE 1535
+
+enum colors {
+  red = 0,
+  yellow,
+  green,
+  cyan,
+  blue,
+  magenta,
+  white,
+  purple,
+  numColors,
+};
+uint32_t COLORS[] = {
+  0xFF0000,
+  0xFFFF00,
+  0x00FF00,
+  0x00FFFF,
+  0x0000FF,
+  0xFF00FF,
+  0xFFFFFF,
+  0xC000FF,
+};
 
 LPD8806 strip = NULL;
 
@@ -102,46 +123,6 @@ void showFor(uint32_t ms, byte doGamma = true) {
   strip.show();
   uint32_t target = millis() + ms;
   while (mode_running && millis() < target) { }
-}
-
-#define BOUNCE_DURATION 50
-volatile unsigned long bounceTime = 0;
-#define outsideBounce() (((millis() - bounceTime) > BOUNCE_DURATION) && (bounceTime = millis()))
-
-// Right
-void b0interrupt() {
-  if (outsideBounce()) {
-    mode_running = false;
-    next_mode = true;
-  }
-}
-// Up
-void b1interrupt() {
-  if (outsideBounce()) {
-  }
-}
-// Left
-void b2interrupt() {
-  if (outsideBounce()) {
-    speed = (speed + 1) % NUM_SPEEDS;
-    mode_running = false;
-  }
-}
-// Center
-void b3interrupt() {
-  if (outsideBounce()) {
-    strip.downBrightness();
-  }
-}
-// Down
-void b4interrupt() {
-  if (outsideBounce()) {
-  }
-}
-void handleRandomTimer() {
-  if (++timerDoubler % 2) {
-    mode_running = false;
-  }
 }
 
 
@@ -211,7 +192,7 @@ void setup() {
   // XXX For now, start dimmer for powersave.
 //  strip.downBrightness();
 //  strip.downBrightness();
-
+  curMode = 1;
 }
 
 void checkPattern() {
@@ -242,6 +223,7 @@ void fillCol(uint8_t col, uint32_t color) {
 }
 
 mode_func modes[] = {
+  &colorMix,
   &wheelPlus,
   &blueSound,
   &spectrum,
@@ -249,31 +231,119 @@ mode_func modes[] = {
   &randDots,
 };
 #define num_modes (sizeof(modes) / sizeof(mode_func))
+mode_func specialModes[] = {
+  &headlights,
+  &plainColors,
+};
+#define num_special_modes (sizeof(specialModes) / sizeof(mode_func))
 
 void loop() {
-  checkPattern();
-//  /*  START RANDOM
-  // handleRandomTimer only acts every 2 times it's called, so this time value is doubled.
-  Timer1.attachInterrupt(handleRandomTimer, 6000000);
-  next_mode = false;
-  while (!next_mode) {
+  // Do whatever curMode defines, over and over.
+  if (curMode == 0) {
+    // Random mode. Go through all normal modes.
     mode_running = true;
-    clear();
-    speed = random(NUM_SPEEDS);
-    (*modes[random(num_modes)])();
-  }
-  Timer1.detachInterrupt();
-//  END RANDOM */
-  for (byte i = 0; i < num_modes; ++i) {
-    speed = 0;
-    next_mode = false;
-    while (!next_mode) {
+    checkPattern();
+    // handleRandomTimer only acts every 2 times it's called, so this time value is doubled.
+    Timer1.attachInterrupt(handleRandomTimer, 6000000);
+    while (curMode == 0) {
       mode_running = true;
       clear();
-      (*modes[i])();
+      speed = random(256);
+      timerDoubler = 0;
+      Timer1.restart();
+      (*modes[random(num_modes)])();
+    }
+    Timer1.detachInterrupt();
+  } else {
+    mode_running = true;
+    clear();
+    if (curMode > 0) {
+      // Remove 1-indexing.
+      (*modes[curMode - 1])();
+    } else {
+      // Remove 1-indexing.
+      (*specialModes[-1 * curMode - 1])();
     }
   }
 }
+
+// Positions should really be bytes, but we're about to do arithmetic with them that wants negative results.
+byte distance(int pos1, int pos2) {
+  byte distance = abs(pos1 - pos2) % WIDTH;
+  if (distance > WIDTH / 2) {
+    distance = WIDTH - distance;
+  }
+  return distance;
+}
+
+#define RED 0
+#define GREEN 1
+#define BLUE 2
+void colorMix() {
+  float pos[] = { .5, .5, .5 };
+  float increment[3];
+  float steps[] = { 0, 0, 0 };
+  word increment_min;
+  word increment_max;
+  switch (speed % 3) {
+  case 0:
+    increment_min = 1;
+    increment_max = 7;
+    break;
+  case 1:
+    increment_min = 5;
+    increment_max = 15;
+    break;
+  case 2:
+    increment_min = 0;
+    increment_max = 3;
+    break;
+  }
+  while (mode_running) {
+    for (byte i = 0; i < WIDTH; i++) {
+      uint32_t color = 0;
+      for (byte c = RED; c <= BLUE; c++) {
+        color |= (uint32_t)(FULL >> distance(i, pos[c] * WIDTH) / ((speed % 2) * 3 + 1)) << (BLUE - c) * 8;
+      }
+      fillCol(i, speed % 2 ? ~color : color);
+    }
+    showFor(1);
+    for (byte c = RED; c <= BLUE; c++) {
+      if (!steps[c]) {
+        increment[c] = (float)random(increment_min, increment_max) / 1000.0;
+        if (random(2)) increment[c] *= -1;
+        steps[c] = random(10, 100);
+      }
+      pos[c] += increment[c];
+      steps[c]--;
+    }
+  }
+}
+
+
+void headlights() {
+  int x, y, i, j;
+  while (mode_running) {
+    for (x = 2, y = 2; x < WIDTH; x += 5) {
+      for (i = 0; i < 3 && x + i < WIDTH; i++) {
+        for (j = 0; j < 3 && y + j < HEIGHT; j++) {
+          // Start with white
+          nodeAt(x + i, y + j) = COLORS[(speed + 6) % numColors];
+        }
+      }
+    }
+    showFor(1000);
+  }
+}
+
+void plainColors() {
+  while (mode_running) {
+    // Start with white
+    fill(COLORS[(speed + 6) % numColors]);
+    showFor(1000);
+  }
+}
+
 
 void blueSound() {
   while (mode_running) {
@@ -297,29 +367,32 @@ int8_t spectrumLayout[] = {
 byte bandSizes[BANDS] = {
  1, 2, 2, 2, 2, 2
 };
+byte bandHeights[BANDS] = { 0 };
 void spectrum() {
   char im[128];
   char data[128];
   int i, curBand;
   int val;
   double bands[BANDS];
-  byte bandHeights[BANDS] = { 0 };
 
   double avg = 0;
 
-  // Count the height of each band so we know how many LEDs to divide between.
-  for (int curBand = 0, i = 0;
-       curBand < BANDS && i < (sizeof(spectrumLayout) * sizeof(int8_t));
-       i++) {
-    if (spectrumLayout[i] < 0) {
-      curBand++;
-    } else {
-      bandHeights[curBand]++;
-      // spectrumLayout is in terms of strip-numbered nodes, but we need it in terms of nodeLayout, so do the reverse translation. O(n^2); I suck.
-      for (int8_t j = 0; j < numNodes; j++) {
-        if (spectrumLayout[i] == nodeLayout[j]) {
-          spectrumLayout[i] = j;
-          break;
+  // Just do this the first time this function runs.
+  if (!bandHeights[0]) {
+    // Count the height of each band so we know how many LEDs to divide between.
+    for (int curBand = 0, i = 0;
+         curBand < BANDS && i < (sizeof(spectrumLayout) * sizeof(int8_t));
+         i++) {
+      if (spectrumLayout[i] < 0) {
+        curBand++;
+      } else {
+        bandHeights[curBand]++;
+        // spectrumLayout is in terms of strip-numbered nodes, but we need it in terms of nodeLayout, so do the reverse translation. O(n^2); I suck.
+        for (int8_t j = 0; j < numNodes; j++) {
+          if (spectrumLayout[i] == nodeLayout[j]) {
+            spectrumLayout[i] = j;
+            break;
+          }
         }
       }
     }
@@ -415,70 +488,76 @@ void wheelPlus() {
 
 
 void nightRide() {
-  uint32_t mycolor;
-  switch (speed) {
-  case 0:
-    mycolor = 0xFF0000;
-    break;
-  case 1:
-    mycolor = 0x00FF00;
-    break;
-  case 2:
-    mycolor = 0x0000FF;
-    break;
-  case 3:
-    mycolor = 0xFFFF00;
-    break;
-  case 4:
-    mycolor = 0xFF00FF;
-    break;
-  case 5:
-    mycolor = 0xFFFFFF;
-    break;
-  }
-
-
   while (mode_running) {
     for (int i = 0; i < WIDTH; i++) {
-      fillCol(i, mycolor);
+      fillCol(i, COLORS[speed % numColors]);
       showFor(50);
       fillCol(i, 0);
     }
     for (int i = WIDTH - 2; i > 0; i--) {
-      fillCol(i, mycolor);
+      fillCol(i, COLORS[speed % numColors]);
       showFor(50);
       fillCol(i, 0);
     }
   }
 }
 
-//Input a value 0 to 384 to get a color value.
-//The colours are a transition r - g -b - back to r
-
-uint32_t Wheel(uint16_t WheelPos)
-{
-  byte r, g, b;
-  switch(WheelPos / 128)
-  {
-    case 0:
-      r = 127 - WheelPos % 128;   //Red down
-      g = WheelPos % 128;      // Green up
-      b = 0;                  //blue off
-      break;
-    case 1:
-      g = 127 - WheelPos % 128;  //green down
-      b = WheelPos % 128;      //blue up
-      r = 0;                  //red off
-      break;
-    case 2:
-      b = 127 - WheelPos % 128;  //blue down
-      r = WheelPos % 128;      //red up
-      g = 0;                  //green off
-      break;
+#define BOUNCE_DURATION 50
+volatile unsigned long bounceTime = 0;
+#define outsideBounce() (((millis() - bounceTime) > BOUNCE_DURATION) && (bounceTime = millis()))
+// Right
+void b0interrupt() {
+  if (outsideBounce()) {
+    speed++;
+    mode_running = false;
   }
-  return(((r*2) << 16) | ((g*2) << 8) | (b*2));
 }
-
+// Up
+void b1interrupt() {
+  if (outsideBounce()) {
+    // If in a special or random mode, switch to first normal mode. Also handle wrapping case.
+    if (curMode <= 0 || curMode >= num_modes) {
+      curMode = 1;
+    } else {
+      // Otherwise, next normal mode.
+      curMode++;
+    }
+    mode_running = false;
+    speed = 0;
+  }
+}
+// Left
+void b2interrupt() {
+  if (outsideBounce()) {
+    // If in a normal or random mode, switch to first special mode. Also handle wrapping case.
+    if (curMode >= 0 || curMode * -1 >= num_special_modes) {
+      curMode = -1;
+    } else {
+      // Otherwise, next special mode.
+      curMode--;
+    }
+    mode_running = false;
+    speed = 0;
+  }
+}
+// Center
+void b3interrupt() {
+  if (outsideBounce()) {
+    strip.downBrightness();
+  }
+}
+// Down
+void b4interrupt() {
+  if (outsideBounce()) {
+    curMode = 0;
+    mode_running = false;
+  }
+}
+void handleRandomTimer() {
+  if (++timerDoubler >= 2) {
+    mode_running = false;
+  }
+}
 
 PROGMEM prog_uchar gammaTable[]  = {
     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
