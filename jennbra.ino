@@ -91,8 +91,6 @@ void showFor(uint32_t ms) {
   while (mode_running && millis() < target) { }
 }
 
-uint32_t mycolor = 0;
-
 #define BOUNCE_DURATION 50
 volatile unsigned long bounceTime = 0;
 #define outsideBounce() (((millis() - bounceTime) > BOUNCE_DURATION) && (bounceTime = millis()))
@@ -107,7 +105,6 @@ void b0interrupt() {
 // Up
 void b1interrupt() {
   if (outsideBounce()) {
-    mycolor = strip.Color(0, 0, 127);
   }
 }
 // Left
@@ -115,7 +112,6 @@ void b2interrupt() {
   if (outsideBounce()) {
     speed = (speed + 1) % NUM_SPEEDS;
     mode_running = false;
-//    mycolor = strip.Color(127, 0, 0);
   }
 }
 // Center
@@ -127,7 +123,6 @@ void b3interrupt() {
 // Down
 void b4interrupt() {
   if (outsideBounce()) {
-    mycolor = strip.Color(127, 127, 0);
   }
 }
 void handleRandomTimer() {
@@ -175,7 +170,6 @@ void setup() {
   // parameters are SPI data and clock pins:
   strip = LPD8806(realNumNodes, dataPin, clockPin);
   Serial.begin(9600);
-//  printArray(nodeLayout, numNodes, WIDTH);
 
   int8_t tempLayout[numNodes];
   for (int i = 0; i < WIDTH; i++) {
@@ -184,11 +178,6 @@ void setup() {
     }
   }
   memcpy(nodeLayout, tempLayout, numNodes * sizeof(int8_t));
-
-//  printArray(nodeLayout, numNodes, HEIGHT);
-
-  mycolor = strip.Color(127, 0, 0);
-
 
   // Start up the LED strip
   strip.begin();
@@ -217,7 +206,12 @@ void setup() {
   PCintPort::attachInterrupt(b2pin, b2interrupt, FALLING);
   PCintPort::attachInterrupt(b3pin, b3interrupt, FALLING);
   PCintPort::attachInterrupt(b4pin, b4interrupt, FALLING);
-  mycolor = strip.Color(127, 0, 0);
+
+
+  // XXX For now, start dimmer for powersave.
+  strip.downBrightness();
+  strip.downBrightness();
+
 }
 
 void set(uint8_t x, uint8_t y, uint32_t color) {
@@ -270,73 +264,170 @@ void loop() {
   }
 }
 
-#define SPECTRUM_HEIGHT 5
 int8_t spectrumLayout[] = {
    5,  4,  3,  2, -1,
-   6,  7,  8,  9,  0,
-  13, 12, 11, 10,  1,
-  14, 15, 16, 17, 27,
-  21, 20, 19, 18, 26,
+   6,  7,  8,  9,  0, -1,
+  13, 12, 11, 10,  1, -1,
+  14, 15, 16, 17, 27, -1,
+  21, 20, 19, 18, 26, -1,
   22, 23, 24, 25, -1,
 };
 #define BANDS 6
+byte bandSizes[BANDS] = {
+ 1, 2, 2, 2, 2, 2
+};
 void spectrum() {
   char im[128];
   char data[128];
-  int i;
+  int i, curBand;
   int val;
-  uint16_t bands[BANDS];
+  double bands[BANDS];
+  byte bandHeights[BANDS] = { 0 };
 
-  long avg = 0;
+  double avg = 0;
 
-
+  // Count the height of each band so we know how many LEDs to divide between.
+  for (int curBand = 0, i = 0;
+       curBand < BANDS && i < (sizeof(spectrumLayout) * sizeof(int8_t));
+       i++) {
+    if (spectrumLayout[i] < 0) {
+      curBand++;
+    } else {
+      bandHeights[curBand]++;
+    }
+  }
 
   WHILE_MODE(30) {
 
-    for (i=0; i < 128; i++){      // We don't go for clean timing here, it's
-      val = analogRead(soundPin);     // better to get somewhat dirty data fast
-      data[i] = val/4 -128;           // than to get data that's lab-accurate
-      im[i] = 0;           // but too slow, for this application.
+    // Sample the sounds coming in and do the transform.
+    for (i=0; i < 128; i++) {
+      val = analogRead(soundPin);
+      data[i] = val / 4 -128;
+      im[i] = 0;
     };
-
     fix_fft(data,im,7,0);
 
-    memset(bands, 0, sizeof(bands));
-    for (i=0; i < 42; i++) {       // In the current design, 60Hz and noise
+    /*for (i = 0; i < 30; i++) {
+      Serial.print((int)sqrt(data[i] * data[i] + im[i] * im[i]));
+      Serial.print(",");
+    }
+    Serial.println("");*/
+    /*int max = 0, maxband = 0;
+    for (i = 0; i < 60; i++) {
+      int hi = sqrt(data[i] * data[i] + im[i] * im[i]);
+      if (hi > max) {
+        max = hi;
+        maxband = i;
+      }
+    }
+    Serial.println(maxband);
+    continue;*/
+
+    // Separate the result into bands.
+    for (curBand = 0; curBand < BANDS; curBand++) {
+      bands[curBand] = 0;
+    }
+    double bandMax = 0;
+    /*Serial.print("d0 ");
+    Serial.print(sqrt(data[0] * data[0] + im[0] * im[0]));
+    Serial.print(" d1 ");
+    Serial.print(sqrt(data[1] * data[1] + im[1] * im[1]));
+    Serial.print(" d2 ");
+    Serial.print(sqrt(data[2] * data[2] + im[2] * im[2]));*/
+
+    /*for (curBand = 0; curBand < BANDS; curBand++) {
+      bands[curBand] = sqrt(data[curBand + 1] * data[curBand + 1] + im[curBand + 1] * im[curBand + 1]);
+      if (bands[curBand] > bandMax) {
+        bandMax = bands[curBand];
+      }
+    }*/
+
+    // Start at 1; the first data point is crap.
+    for (curBand = 0, i = 1;
+         curBand < BANDS && i < 128;
+         curBand++) {
+      for (int target = i + bandSizes[curBand]; i < target && i < 128; i++) {
+        bands[curBand] += sqrt(data[i] * data[i] + im[i] * im[i]);
+      }
+      bands[curBand] /= bandSizes[curBand];
+
+      if (bands[curBand] > bandMax) {
+        bandMax = bands[curBand];
+      }
+    }
+
+/*    for (curBand = 0, i = 1;
+         curBand < BANDS && i < 128;
+         i++) {
+      bands[curBand] += sqrt(data[i] * data[i] + im[i] * im[i]);
+
+      // Weird math to figure out if we've found (1 << curBand) values for this band, or we're out of values.
+      if (i >= (1 << (curBand + 1)) - 2 || i == 127) {
+        bands[curBand] /= (double)(1 << curBand);
+        //Serial.print("   band ");
+        //Serial.print(curBand);
+        //Serial.print(" ");
+        //Serial.print(bands[curBand]);
+        if (bands[curBand] > bandMax) {
+          bandMax = bands[curBand];
+        }
+        curBand++;
+      }
+    }*/
+    /*for (i=0; i < 42; i++) {       // In the current design, 60Hz and noise
       // XXX
       bands[i / 6] += sqrt(data[i] * data[i] + im[i] * im[i]);//in general are a problem. Future designs
       // START HERE: Lots of frequencies stuck at the bottom band. Divide that one more??
     }
 
+    // Find the maximum band value.
     uint16_t bandMax = 0;
-    for (i = 0; i < BANDS; i++) {
-      if (bands[i] > bandMax) {
-        bandMax = bands[i];
+    for (curBand = 0; curBand < BANDS; curBand++) {
+      if (bands[curBand] > bandMax) {
+        bandMax = bands[curBand];
       }
-    }
+    }*/
 
     if (!avg) {
-      avg = bandMax * 2;
+      // If we're just starting out, assume this is the average loudness.
+      avg = bandMax;
     } else {
-      avg += ((long)bandMax - avg) / 20;
+      // Otherwise, converge the average towards this, so the loudness always appears "medium".
+      avg += (bandMax - avg) / 60.0;
     }
 
-    for (i = 0; i < BANDS; i++) {
-      // XXX
-      int ledHeight = (i == 0 || i == 5) ? 4 : 5;
-      long height = (long)bands[i] * (long)ledHeight * 0xFF / avg * .8;
-      for (int j = 0; j < ledHeight; j++) {
+    /*Serial.print("  max");
+    Serial.print(bandMax);
+    Serial.print("  avg");
+    Serial.print(avg);*/
+
+    // Render each band in LEDs, shading as necessary.
+    for (curBand = 0, i = 0;
+         curBand < BANDS && i < (sizeof(spectrumLayout) * sizeof(int8_t));
+         // Increment i again when we move to the next band, to account for the -1 at the end.
+         curBand++, i++) {
+      // TODO: Make the values linger a bit to make it less stroby.
+      long height = (bands[curBand] / avg) * 0.8 * ((double)bandHeights[curBand] * 255.0);//XXX? * .8;
+      /*Serial.print("  band");
+      Serial.print(curBand);
+      Serial.print(":");
+      Serial.print(bands[curBand]);
+      Serial.print(":");
+      Serial.print(height);*/
+      for (int j = 0; j < bandHeights[curBand]; j++) {
         byte value = gamma(min(height, 0xFF));
-        strip.set(spectrumLayout[i * SPECTRUM_HEIGHT + j],
-          (i <= 1 || i == 5) ? value : 0,
-          (i >= 1 && i <= 3) ? value : 0,
-          (i >= 3) ? value : 0);
+        // Increment i for the next node the next time around.
+        strip.set(spectrumLayout[i++],
+          (curBand <= 1 || curBand == 5) ? value : 0,
+          (curBand >= 1 && curBand <= 3) ? value : 0,
+          (curBand >= 3) ? value : 0);
         height -= 0xFF;
         if (height < 0) {
           height = 0;
         }
       }
     }
+//    Serial.println("");
     strip.show();
   }
 }
