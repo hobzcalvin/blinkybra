@@ -46,6 +46,9 @@ int8_t nodeLayout[] = {
 
 #define numNodes (sizeof(nodeLayout) / sizeof(int8_t))
 #define HEIGHT (numNodes / WIDTH)
+#define nodeAt(x, y) (nodes[(x) * HEIGHT + (y)])
+
+uint32_t nodes[numNodes] = { 0 };
 
 typedef void (*mode_func)(void);
 
@@ -55,10 +58,10 @@ volatile byte speed = 0;
 #define NUM_SPEEDS 6
 volatile byte timerDoubler = 0;
 
-#define FULL 127
+#define FULL 255
+#define MAXHUE 1535
 
 LPD8806 strip = NULL;
-uint8_t realNumNodes = 0;
 
 // PROTOTYPES
 byte gamma(byte x);
@@ -77,7 +80,7 @@ void printArray(int8_t* arr, uint8_t len, uint8_t w) {
 
 void fill(uint32_t color) {
   for (int i = 0; i < numNodes; i++) {
-    strip.setPixelColor(i, color);
+    nodes[i] = color;
   }
 }
 
@@ -85,7 +88,17 @@ void clear() {
   fill(0);
 }
 
-void showFor(uint32_t ms) {
+void showFor(uint32_t ms, byte doGamma = true) {
+  if (!mode_running) return;
+  for (int i = 0; i < numNodes; i++) {
+    if (nodeLayout[i] >= 0) {
+      if (doGamma) {
+        strip.setPixelColor(nodeLayout[i], gamma(nodes[i] >> 16), gamma(nodes[i] >> 8), gamma(nodes[i]));
+      } else {
+        strip.setPixelColor(nodeLayout[i], nodes[i] >> 17, nodes[i] >> 9, nodes[i] >> 1);
+      }
+    }
+  }
   strip.show();
   uint32_t target = millis() + ms;
   while (mode_running && millis() < target) { }
@@ -159,7 +172,7 @@ void setup() {
   digitalWrite(b3pin, HIGH);
   digitalWrite(b4pin, HIGH);
 
-  realNumNodes = 0;
+  byte realNumNodes = 0;
   for (int i = 0; i < numNodes; i++) {
     if (nodeLayout[i] >= 0) {
       realNumNodes++;
@@ -185,20 +198,6 @@ void setup() {
   // Update the strip, to start they are all 'off'
   strip.show();
 
-  fill(strip.Color(127, 0, 0));
-  digitalWrite(ledPin, HIGH);
-  showFor(200);
-  fill(strip.Color(0, 127, 0));
-  digitalWrite(ledPin, LOW);
-  showFor(200);
-  fill(strip.Color(0, 0, 127));
-  digitalWrite(ledPin, HIGH);
-  showFor(200);
-  fill(strip.Color(0, 0, 0));
-  digitalWrite(ledPin, LOW);
-  showFor(200);
-  digitalWrite(ledPin, HIGH);
-
 //  attachInterrupt(0, b0interrupt, FALLING);
 //  attachInterrupt(1, b1interrupt, FALLING);
   PCintPort::attachInterrupt(b0pin, b0interrupt, FALLING);
@@ -208,44 +207,52 @@ void setup() {
   PCintPort::attachInterrupt(b4pin, b4interrupt, FALLING);
 
 
+  Timer1.initialize();
   // XXX For now, start dimmer for powersave.
-  strip.downBrightness();
-  strip.downBrightness();
-  strip.downBrightness();
+//  strip.downBrightness();
+//  strip.downBrightness();
 
 }
 
-void set(uint8_t x, uint8_t y, uint32_t color) {
-  if (nodeLayout[x * HEIGHT + y] >= 0) {
-/*    Serial.print(x);
-    Serial.print(",");
-    Serial.print(y);
-    Serial.print(" translates to ");
-    Serial.println(nodeLayout[x * HEIGHT + y]);*/
-    strip.setPixelColor(nodeLayout[x * HEIGHT + y], color);
-  }
+void checkPattern() {
+  fill(0xFF0000);
+  digitalWrite(ledPin, HIGH);
+  showFor(200);
+  fill(0x00FF00);
+  digitalWrite(ledPin, LOW);
+  showFor(200);
+  fill(0x0000FF);
+  digitalWrite(ledPin, HIGH);
+  showFor(200);
+  fill(0);
+  digitalWrite(ledPin, LOW);
+  showFor(200);
+  digitalWrite(ledPin, HIGH);
 }
 
 void shiftLeft() {
+  memmove(nodes, nodes + HEIGHT, HEIGHT * (WIDTH - 1) * sizeof(uint32_t));
+  fillCol(WIDTH - 1, 0);
 }
 
 void fillCol(uint8_t col, uint32_t color) {
   for (int j = 0; j < HEIGHT; j++) {
-    set(col, j, color);
+    nodeAt(col, j) = color;
   }
 }
 
 mode_func modes[] = {
+  &wheelPlus,
   &blueSound,
   &spectrum,
-  &randDots,
-  &wheelPlus,
   &nightRide,
+  &randDots,
 };
 #define num_modes (sizeof(modes) / sizeof(mode_func))
 
 void loop() {
-  /*  START RANDOM
+  checkPattern();
+//  /*  START RANDOM
   // handleRandomTimer only acts every 2 times it's called, so this time value is doubled.
   Timer1.attachInterrupt(handleRandomTimer, 6000000);
   next_mode = false;
@@ -256,7 +263,7 @@ void loop() {
     (*modes[random(num_modes)])();
   }
   Timer1.detachInterrupt();
-  END RANDOM */
+//  END RANDOM */
   for (byte i = 0; i < num_modes; ++i) {
     speed = 0;
     next_mode = false;
@@ -271,8 +278,9 @@ void loop() {
 void blueSound() {
   while (mode_running) {
     //ggg
-    fillCol(WIDTH - 1, strip.Color(analogRead(soundPin) >> 4, 0, 127));
+    fillCol(WIDTH - 1, ((uint32_t)(analogRead(soundPin) >> 2) << 16) | 0x0000FF);
     showFor(20);
+//    Serial.println(nodeAt(11, 0));
     shiftLeft();
   }
 }
@@ -307,6 +315,13 @@ void spectrum() {
       curBand++;
     } else {
       bandHeights[curBand]++;
+      // spectrumLayout is in terms of strip-numbered nodes, but we need it in terms of nodeLayout, so do the reverse translation. O(n^2); I suck.
+      for (int8_t j = 0; j < numNodes; j++) {
+        if (spectrumLayout[i] == nodeLayout[j]) {
+          spectrumLayout[i] = j;
+          break;
+        }
+      }
     }
   }
 
@@ -357,47 +372,44 @@ void spectrum() {
       // TODO: Make the values linger a bit to make it less stroby.
       long height = (bands[curBand] / avg) * 0.5 * ((double)bandHeights[curBand] * 255.0);
       for (int j = 0; j < bandHeights[curBand]; j++) {
-        byte value = gamma(min(height, 0xFF));
+        // ggg
+        byte value = min(height, FULL);
+        uint32_t color = 0;
+        if (curBand <= 1 || curBand == 5) color |= ((uint32_t)value) << 16;
+        if (curBand >= 1 && curBand <= 3) color |= ((uint32_t)value) << 8;
+        if (curBand >= 3) color |= value;
         // Increment i for the next node the next time around.
-        strip.set(spectrumLayout[i++],
-          (curBand <= 1 || curBand == 5) ? value : 0,
+        nodes[spectrumLayout[i++]] = color;
+        /*nodes[spectrumLayout[i++]] = color((curBand <= 1 || curBand == 5) ? value : 0,
           (curBand >= 1 && curBand <= 3) ? value : 0,
-          (curBand >= 3) ? value : 0);
-        height -= 0xFF;
+          (curBand >= 3) ? value : 0);*/
+        height -= FULL;
         if (height < 0) {
           height = 0;
         }
       }
     }
-    strip.show();
+    showFor(1);
   }
 }
 
 void randDots() {
 
   while (mode_running) {
-    strip.set(random(numNodes), random(FULL + 1), random(FULL + 1), random(FULL + 1));
+//    nodes[random(numNodes)] = color(random(FULL), random(FULL), random(FULL));
+    nodes[random(numNodes)] = random(FULL) << 16 | random(FULL) << 8 | random(FULL);
     showFor(1);
   }
 }
 
-#define HUE_DIVIDER ((float)FULL / (float)(numNodes))
 void wheelPlus() {
-/*  byte baseHue = 100;
   while (mode_running) {
-    for (byte i = 0; i < numNodes; i++) {
-      strip.set(i, HSVtoRGBfull(((word)((float)i * HUE_DIVIDER) + baseHue) % 0xff, speed % 2 ? FULL / 2 : FULL, speed % 2 ? FULL / 2 : FULL));
+    for (int i = 0; i <= MAXHUE; i+=2) {
+      for (int j = 0; j < WIDTH; j++) {
+        fillCol(j, hsv2rgb(i + j * (MAXHUE / WIDTH), FULL, FULL));
+      }
+      showFor(1);
     }
-    baseHue += (3 - speed % 3) * 3;
-    showFor(60 * (speed % 3));
-  }*/
-  int j = 0;
-  while (mode_running) {
-    for (int i = 0; i < WIDTH; i++) {
-      fillCol(i, Wheel( ((i * 384 / WIDTH + j) % 384)));
-    }
-    showFor(5);
-    j++;
   }
 }
 
@@ -406,22 +418,22 @@ void nightRide() {
   uint32_t mycolor;
   switch (speed) {
   case 0:
-    mycolor = strip.Color(127, 0, 0);
+    mycolor = 0xFF0000;
     break;
   case 1:
-    mycolor = strip.Color(0, 127, 0);
+    mycolor = 0x00FF00;
     break;
   case 2:
-    mycolor = strip.Color(0, 0, 127);
+    mycolor = 0x0000FF;
     break;
   case 3:
-    mycolor = strip.Color(127, 127, 0);
+    mycolor = 0xFFFF00;
     break;
   case 4:
-    mycolor = strip.Color(127, 0, 127);
+    mycolor = 0xFF00FF;
     break;
   case 5:
-    mycolor = strip.Color(127, 127, 127);
+    mycolor = 0xFFFFFF;
     break;
   }
 
@@ -430,12 +442,12 @@ void nightRide() {
     for (int i = 0; i < WIDTH; i++) {
       fillCol(i, mycolor);
       showFor(50);
-      fillCol(i, strip.Color(0, 0, 0));
+      fillCol(i, 0);
     }
     for (int i = WIDTH - 2; i > 0; i--) {
       fillCol(i, mycolor);
       showFor(50);
-      fillCol(i, strip.Color(0, 0, 0));
+      fillCol(i, 0);
     }
   }
 }
@@ -464,7 +476,7 @@ uint32_t Wheel(uint16_t WheelPos)
       g = 0;                  //green off
       break;
   }
-  return(strip.Color(r,g,b));
+  return(((r*2) << 16) | ((g*2) << 8) | (b*2));
 }
 
 
