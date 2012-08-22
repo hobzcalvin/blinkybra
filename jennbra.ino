@@ -76,7 +76,7 @@ void printArray(int8_t* arr, uint8_t len, uint8_t w) {
 }
 
 void fill(uint32_t color) {
-  for (int i = 0; i < realNumNodes; i++) {
+  for (int i = 0; i < numNodes; i++) {
     strip.setPixelColor(i, color);
   }
 }
@@ -211,6 +211,7 @@ void setup() {
   // XXX For now, start dimmer for powersave.
   strip.downBrightness();
   strip.downBrightness();
+  strip.downBrightness();
 
 }
 
@@ -225,6 +226,9 @@ void set(uint8_t x, uint8_t y, uint32_t color) {
   }
 }
 
+void shiftLeft() {
+}
+
 void fillCol(uint8_t col, uint32_t color) {
   for (int j = 0; j < HEIGHT; j++) {
     set(col, j, color);
@@ -232,13 +236,13 @@ void fillCol(uint8_t col, uint32_t color) {
 }
 
 mode_func modes[] = {
+  &blueSound,
   &spectrum,
   &randDots,
   &wheelPlus,
   &nightRide,
 };
 #define num_modes (sizeof(modes) / sizeof(mode_func))
-#define WHILE_MODE(rand_cycles) while (mode_running)
 
 void loop() {
   /*  START RANDOM
@@ -261,6 +265,15 @@ void loop() {
       clear();
       (*modes[i])();
     }
+  }
+}
+
+void blueSound() {
+  while (mode_running) {
+    //ggg
+    fillCol(WIDTH - 1, strip.Color(analogRead(soundPin) >> 4, 0, 127));
+    showFor(20);
+    shiftLeft();
   }
 }
 
@@ -297,7 +310,7 @@ void spectrum() {
     }
   }
 
-  WHILE_MODE(30) {
+  while (mode_running) {
 
     // Sample the sounds coming in and do the transform.
     for (i=0; i < 128; i++) {
@@ -307,40 +320,11 @@ void spectrum() {
     };
     fix_fft(data,im,7,0);
 
-    /*for (i = 0; i < 30; i++) {
-      Serial.print((int)sqrt(data[i] * data[i] + im[i] * im[i]));
-      Serial.print(",");
-    }
-    Serial.println("");*/
-    /*int max = 0, maxband = 0;
-    for (i = 0; i < 60; i++) {
-      int hi = sqrt(data[i] * data[i] + im[i] * im[i]);
-      if (hi > max) {
-        max = hi;
-        maxband = i;
-      }
-    }
-    Serial.println(maxband);
-    continue;*/
-
     // Separate the result into bands.
     for (curBand = 0; curBand < BANDS; curBand++) {
       bands[curBand] = 0;
     }
     double bandMax = 0;
-    /*Serial.print("d0 ");
-    Serial.print(sqrt(data[0] * data[0] + im[0] * im[0]));
-    Serial.print(" d1 ");
-    Serial.print(sqrt(data[1] * data[1] + im[1] * im[1]));
-    Serial.print(" d2 ");
-    Serial.print(sqrt(data[2] * data[2] + im[2] * im[2]));*/
-
-    /*for (curBand = 0; curBand < BANDS; curBand++) {
-      bands[curBand] = sqrt(data[curBand + 1] * data[curBand + 1] + im[curBand + 1] * im[curBand + 1]);
-      if (bands[curBand] > bandMax) {
-        bandMax = bands[curBand];
-      }
-    }*/
 
     // Start at 1; the first data point is crap.
     for (curBand = 0, i = 1;
@@ -351,55 +335,19 @@ void spectrum() {
       }
       bands[curBand] /= bandSizes[curBand];
 
+      // Find the maximum band value.
       if (bands[curBand] > bandMax) {
         bandMax = bands[curBand];
       }
     }
-
-/*    for (curBand = 0, i = 1;
-         curBand < BANDS && i < 128;
-         i++) {
-      bands[curBand] += sqrt(data[i] * data[i] + im[i] * im[i]);
-
-      // Weird math to figure out if we've found (1 << curBand) values for this band, or we're out of values.
-      if (i >= (1 << (curBand + 1)) - 2 || i == 127) {
-        bands[curBand] /= (double)(1 << curBand);
-        //Serial.print("   band ");
-        //Serial.print(curBand);
-        //Serial.print(" ");
-        //Serial.print(bands[curBand]);
-        if (bands[curBand] > bandMax) {
-          bandMax = bands[curBand];
-        }
-        curBand++;
-      }
-    }*/
-    /*for (i=0; i < 42; i++) {       // In the current design, 60Hz and noise
-      // XXX
-      bands[i / 6] += sqrt(data[i] * data[i] + im[i] * im[i]);//in general are a problem. Future designs
-      // START HERE: Lots of frequencies stuck at the bottom band. Divide that one more??
-    }
-
-    // Find the maximum band value.
-    uint16_t bandMax = 0;
-    for (curBand = 0; curBand < BANDS; curBand++) {
-      if (bands[curBand] > bandMax) {
-        bandMax = bands[curBand];
-      }
-    }*/
 
     if (!avg) {
-      // If we're just starting out, assume this is the average loudness.
-      avg = bandMax;
+      // If we're just starting out, assume this is half the average loudness.
+      avg = bandMax / 2;
     } else {
       // Otherwise, converge the average towards this, so the loudness always appears "medium".
       avg += (bandMax - avg) / 60.0;
     }
-
-    /*Serial.print("  max");
-    Serial.print(bandMax);
-    Serial.print("  avg");
-    Serial.print(avg);*/
 
     // Render each band in LEDs, shading as necessary.
     for (curBand = 0, i = 0;
@@ -407,13 +355,7 @@ void spectrum() {
          // Increment i again when we move to the next band, to account for the -1 at the end.
          curBand++, i++) {
       // TODO: Make the values linger a bit to make it less stroby.
-      long height = (bands[curBand] / avg) * 0.8 * ((double)bandHeights[curBand] * 255.0);//XXX? * .8;
-      /*Serial.print("  band");
-      Serial.print(curBand);
-      Serial.print(":");
-      Serial.print(bands[curBand]);
-      Serial.print(":");
-      Serial.print(height);*/
+      long height = (bands[curBand] / avg) * 0.5 * ((double)bandHeights[curBand] * 255.0);
       for (int j = 0; j < bandHeights[curBand]; j++) {
         byte value = gamma(min(height, 0xFF));
         // Increment i for the next node the next time around.
@@ -427,14 +369,13 @@ void spectrum() {
         }
       }
     }
-//    Serial.println("");
     strip.show();
   }
 }
 
 void randDots() {
 
-  WHILE_MODE(30) {
+  while (mode_running) {
     strip.set(random(numNodes), random(FULL + 1), random(FULL + 1), random(FULL + 1));
     showFor(1);
   }
@@ -443,7 +384,7 @@ void randDots() {
 #define HUE_DIVIDER ((float)FULL / (float)(numNodes))
 void wheelPlus() {
 /*  byte baseHue = 100;
-  WHILE_MODE(30) {
+  while (mode_running) {
     for (byte i = 0; i < numNodes; i++) {
       strip.set(i, HSVtoRGBfull(((word)((float)i * HUE_DIVIDER) + baseHue) % 0xff, speed % 2 ? FULL / 2 : FULL, speed % 2 ? FULL / 2 : FULL));
     }
@@ -451,7 +392,7 @@ void wheelPlus() {
     showFor(60 * (speed % 3));
   }*/
   int j = 0;
-  WHILE_MODE(30) {
+  while (mode_running) {
     for (int i = 0; i < WIDTH; i++) {
       fillCol(i, Wheel( ((i * 384 / WIDTH + j) % 384)));
     }
@@ -485,7 +426,7 @@ void nightRide() {
   }
 
 
-  WHILE_MODE(5) {
+  while (mode_running) {
     for (int i = 0; i < WIDTH; i++) {
       fillCol(i, mycolor);
       showFor(50);
