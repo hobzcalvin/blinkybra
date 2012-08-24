@@ -47,6 +47,7 @@ int8_t nodeLayout[] = {
 #define numNodes (sizeof(nodeLayout) / sizeof(int8_t))
 #define HEIGHT (numNodes / WIDTH)
 #define nodeAt(x, y) (nodes[(x) * HEIGHT + (y)])
+#define imaginaryNode(x, y) (nodeLayout[(x) * HEIGHT + (y)] == -1)
 
 uint32_t nodes[numNodes] = { 0 };
 
@@ -111,7 +112,7 @@ void clear() {
 
 void showFor(uint32_t ms, byte doGamma = true) {
   if (!mode_running) return;
-  for (int i = 0; i < numNodes; i++) {
+  for (int i = 0; i < numNodes && mode_running; i++) {
     if (nodeLayout[i] >= 0) {
       if (doGamma) {
         strip.setPixelColor(nodeLayout[i], gamma(nodes[i] >> 16), gamma(nodes[i] >> 8), gamma(nodes[i]));
@@ -190,9 +191,9 @@ void setup() {
 
   Timer1.initialize();
   // XXX For now, start dimmer for powersave.
-//  strip.downBrightness();
-//  strip.downBrightness();
-  curMode = 1;
+  strip.downBrightness();
+  strip.downBrightness();
+  curMode = 3;
 }
 
 void checkPattern() {
@@ -241,6 +242,7 @@ void loop() {
   // Do whatever curMode defines, over and over.
   if (curMode == 0) {
     // Random mode. Go through all normal modes.
+    // Need to set mode_running now so it doesn't think it's still time to change modes.
     mode_running = true;
     checkPattern();
     // handleRandomTimer only acts every 2 times it's called, so this time value is doubled.
@@ -268,10 +270,11 @@ void loop() {
 }
 
 // Positions should really be bytes, but we're about to do arithmetic with them that wants negative results.
-byte distance(int pos1, int pos2) {
-  byte distance = abs(pos1 - pos2) % WIDTH;
-  if (distance > WIDTH / 2) {
-    distance = WIDTH - distance;
+float distance(float pos1, float pos2, float dimensionSize) {
+  float distance = abs(pos1 - pos2);
+  while (distance > dimensionSize) distance -= dimensionSize;
+  if (distance > dimensionSize / 2) {
+    distance = dimensionSize - distance;
   }
   return distance;
 }
@@ -280,41 +283,61 @@ byte distance(int pos1, int pos2) {
 #define GREEN 1
 #define BLUE 2
 void colorMix() {
-  float pos[] = { .5, .5, .5 };
-  float increment[3];
-  float steps[] = { 0, 0, 0 };
-  word increment_min;
-  word increment_max;
-  switch (speed % 3) {
+  // Cut speed to a range we care about.
+  speed %= 12;
+
+  float xPos[] = { WIDTH / 2.0, WIDTH / 2.0, WIDTH / 2.0 };
+  float yPos[] = { HEIGHT / 2.0, HEIGHT / 2.0, HEIGHT / 2.0 };
+  float xIncrement[3];
+  float yIncrement[3];
+  int steps[] = { 0, 0, 0 };
+
+  float size = 4.0 + (speed % 2);
+
+  byte increment_max = 4 * (speed % 3 + 1);
+  /*switch (speed % 3) {
   case 0:
-    increment_min = 1;
-    increment_max = 7;
-    break;
-  case 1:
-    increment_min = 5;
-    increment_max = 15;
-    break;
-  case 2:
-    increment_min = 0;
     increment_max = 3;
     break;
-  }
+  case 1:
+    increment_max = 6;
+    break;
+  case 2:
+    increment_max = 15;
+    break;
+  }*/
+
   while (mode_running) {
-    for (byte i = 0; i < WIDTH; i++) {
-      uint32_t color = 0;
-      for (byte c = RED; c <= BLUE; c++) {
-        color |= (uint32_t)(FULL >> distance(i, pos[c] * WIDTH) / ((speed % 2) * 3 + 1)) << (BLUE - c) * 8;
+    // Render the spots.
+    for (byte x = 0; x < WIDTH; x++) {
+      for (byte y = 0; y < HEIGHT; y++) {
+        // Don't render imaginary nodes; they take time.
+        if (imaginaryNode(x, y)) continue;
+        uint32_t color = 0;
+        for (byte c = RED; c <= BLUE; c++) {
+          float xDist = distance(x, xPos[c], WIDTH);
+          float yDist = distance(y, yPos[c], HEIGHT);
+          float dist = sqrt(xDist * xDist + yDist * yDist);
+          color |= (uint32_t)(255.0 * (size - min(size, dist)) / size) << (BLUE - c) * 8;
+        }
+        nodeAt(x, y) = (speed > 5) ? ~color : color;
       }
-      fillCol(i, speed % 2 ? ~color : color);
     }
     showFor(1);
+
+    // Move the spots.
     for (byte c = RED; c <= BLUE; c++) {
       if (!steps[c]) {
-        increment[c] = (float)random(increment_min, increment_max) / 1000.0;
-        if (random(2)) increment[c] *= -1;
+        xIncrement[c] = ((float)random(0, increment_max * 2) - increment_max) / 20.0;
+        yIncrement[c] = ((float)random(0, increment_max * 2) - increment_max) / 20.0;
         steps[c] = random(10, 100);
       }
-      pos[c] += increment[c];
+      xPos[c] += xIncrement[c];
+      yPos[c] += yIncrement[c];
+      while (xPos[c] > WIDTH) xPos[c] -= WIDTH;
+      while (yPos[c] > HEIGHT) yPos[c] -= HEIGHT;
+      while (xPos[c] < 0) xPos[c] += WIDTH;
+      while (yPos[c] < 0) yPos[c] += HEIGHT;
       steps[c]--;
     }
   }
@@ -346,11 +369,15 @@ void plainColors() {
 
 
 void blueSound() {
+  uint32_t base = speed % 2 ? 0 : COLORS[blue];
+  byte shift = (speed % 3) * 8;
+  if (base == COLORS[blue] && shift == 0) {
+    // Avoid blue on blue; change base to red.
+    base = COLORS[red];
+  }
   while (mode_running) {
-    //ggg
-    fillCol(WIDTH - 1, ((uint32_t)(analogRead(soundPin) >> 2) << 16) | 0x0000FF);
-    showFor(20);
-//    Serial.println(nodeAt(11, 0));
+    fillCol(WIDTH - 1, ((uint32_t)(analogRead(soundPin) >> 2) << shift) | base);
+    showFor(50);
     shiftLeft();
   }
 }
@@ -374,6 +401,7 @@ void spectrum() {
   int i, curBand;
   int val;
   double bands[BANDS];
+  long curHeights[BANDS] = { 0 };
 
   double avg = 0;
 
@@ -444,8 +472,13 @@ void spectrum() {
          curBand++, i++) {
       // TODO: Make the values linger a bit to make it less stroby.
       long height = (bands[curBand] / avg) * 0.5 * ((double)bandHeights[curBand] * 255.0);
+      if (height < curHeights[curBand]) {
+        curHeights[curBand] = (height + curHeights[curBand]) / 2;
+      } else {
+        curHeights[curBand] = height;
+      }
+      height = curHeights[curBand];
       for (int j = 0; j < bandHeights[curBand]; j++) {
-        // ggg
         byte value = min(height, FULL);
         uint32_t color = 0;
         if (curBand <= 1 || curBand == 5) color |= ((uint32_t)value) << 16;
@@ -515,9 +548,12 @@ void b0interrupt() {
 // Up
 void b1interrupt() {
   if (outsideBounce()) {
-    // If in a special or random mode, switch to first normal mode. Also handle wrapping case.
-    if (curMode <= 0 || curMode >= num_modes) {
+    // If in a special mode, switch to first normal mode.
+    if (curMode < 0) {
       curMode = 1;
+    } else if (curMode >= num_modes) {
+      // Last mode; switch to random.
+      curMode = 0;
     } else {
       // Otherwise, next normal mode.
       curMode++;
@@ -546,7 +582,7 @@ void b3interrupt() {
     strip.downBrightness();
   }
 }
-// Down
+// Down = LESS USED.
 void b4interrupt() {
   if (outsideBounce()) {
     curMode = 0;
