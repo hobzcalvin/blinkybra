@@ -2,6 +2,11 @@
 // XXX: The LPD8806 library should successfully include this itself.
 #include "SPI.h"
 
+#define NO_PORTB_PINCHANGES // to indicate that port b will not be used for pin change interrupts
+#define NO_PORTC_PINCHANGES // to indicate that port c will not be used for pin change interrupts
+#define NO_PIN_STATE        // to indicate that you don't need the pinState
+#define NO_PIN_NUMBER       // to indicate that you don't need the arduinoPin
+#define DISABLE_PCINT_MULTI_SERVICE // to limit the handler to servicing a single interrupt per invocation.
 #include "PinChangeInt.h"
 #include "TimerOne.h"
 #include "fix_fft.h"
@@ -60,6 +65,9 @@ volatile byte timerDoubler;
 
 #define FULL 255
 #define MAXHUE 1535
+#define REDHUE 0
+#define GREENHUE 512
+#define BLUEHUE 1024
 
 enum colors {
   red = 0,
@@ -191,9 +199,10 @@ void setup() {
 
   Timer1.initialize();
   // XXX For now, start dimmer for powersave.
-  strip.downBrightness();
-  strip.downBrightness();
-  curMode = 3;
+//  strip.downBrightness();
+//  strip.downBrightness();
+  // Start mode
+  curMode = 0;
 }
 
 void checkPattern() {
@@ -252,7 +261,7 @@ void loop() {
       clear();
       speed = random(256);
       timerDoubler = 0;
-      Timer1.restart();
+//      Timer1.restart();
       (*modes[random(num_modes)])();
     }
     Timer1.detachInterrupt();
@@ -393,6 +402,7 @@ int8_t spectrumLayout[] = {
 #define BANDS 6
 byte bandSizes[BANDS] = {
  1, 2, 2, 2, 2, 2
+// 1, 2, 10, 20, 20, 20
 };
 byte bandHeights[BANDS] = { 0 };
 void spectrum() {
@@ -473,7 +483,7 @@ void spectrum() {
       // TODO: Make the values linger a bit to make it less stroby.
       long height = (bands[curBand] / avg) * 0.5 * ((double)bandHeights[curBand] * 255.0);
       if (height < curHeights[curBand]) {
-        curHeights[curBand] = (height + curHeights[curBand]) / 2;
+        curHeights[curBand] = (height + 2 * curHeights[curBand]) / 3;
       } else {
         curHeights[curBand] = height;
       }
@@ -481,9 +491,22 @@ void spectrum() {
       for (int j = 0; j < bandHeights[curBand]; j++) {
         byte value = min(height, FULL);
         uint32_t color = 0;
-        if (curBand <= 1 || curBand == 5) color |= ((uint32_t)value) << 16;
-        if (curBand >= 1 && curBand <= 3) color |= ((uint32_t)value) << 8;
-        if (curBand >= 3) color |= value;
+        switch (speed % 4) {
+        case 0:
+          if (curBand <= 1 || curBand == 5) color |= ((uint32_t)value) << 16;
+          if (curBand >= 1 && curBand <= 3) color |= ((uint32_t)value) << 8;
+          if (curBand >= 3) color |= value;
+          break;
+        case 1:
+          color = ((uint32_t)value << 16) | ((uint32_t)value << 8) | ((uint32_t)value << 0);
+          break;
+        case 2:
+          color = hsv2rgb(BLUEHUE + (curBand - 3) * 70, FULL, value);
+          break;
+        case 3:
+          color = hsv2rgb(GREENHUE - 512 * (bands[curBand] / avg * 0.5), FULL, value);
+          break;
+        }
         // Increment i for the next node the next time around.
         nodes[spectrumLayout[i++]] = color;
         /*nodes[spectrumLayout[i++]] = color((curBand <= 1 || curBand == 5) ? value : 0,
@@ -503,16 +526,37 @@ void randDots() {
 
   while (mode_running) {
 //    nodes[random(numNodes)] = color(random(FULL), random(FULL), random(FULL));
-    nodes[random(numNodes)] = random(FULL) << 16 | random(FULL) << 8 | random(FULL);
+    int node;
+    do {
+      node = random(numNodes);
+    } while (nodeLayout[node] == -1);
+
+    switch (speed % 5) {
+    case 0:
+      nodes[node] = random(FULL) << 16 | random(FULL) << 8 | random(FULL);
+      break;
+    case 1:
+      nodes[node] = hsv2rgb(random(REDHUE + 130, REDHUE + 180), FULL, random(FULL / 2, FULL));
+      break;
+    case 2:
+      nodes[node] = hsv2rgb(0, 0, random(0, FULL));
+      break;
+    case 3:
+      nodes[node] = hsv2rgb(random(BLUEHUE - 100, BLUEHUE + 100), random(FULL / 2, FULL), random(FULL / 2, FULL));
+      break;
+    case 4:
+      nodes[node] = hsv2rgb(random(MAXHUE), FULL, FULL);
+      break;
+    }
     showFor(1);
   }
 }
 
 void wheelPlus() {
   while (mode_running) {
-    for (int i = 0; i <= MAXHUE; i+=2) {
-      for (int j = 0; j < WIDTH; j++) {
-        fillCol(j, hsv2rgb(i + j * (MAXHUE / WIDTH), FULL, FULL));
+    for (int i = 0; i <= MAXHUE && mode_running; i += 1 + (speed % 2) * 3) {
+      for (int j = 0; j < WIDTH && mode_running; j++) {
+        fillCol(j, hsv2rgb(i + j * (MAXHUE / WIDTH) / (1 + speed % 3 * 2), FULL, FULL));
       }
       showFor(1);
     }
@@ -590,6 +634,7 @@ void b4interrupt() {
   }
 }
 void handleRandomTimer() {
+  Serial.println("handled");
   if (++timerDoubler >= 2) {
     mode_running = false;
   }
