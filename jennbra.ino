@@ -125,6 +125,7 @@ void b2interrupt();
 void b3interrupt();
 void b4interrupt();
 void fillCol(uint8_t col, uint32_t color);
+void floater();
 void colorMix();
 void wheelPlus();
 void blueSound();
@@ -238,9 +239,6 @@ void setup() {
 
 
   Timer1.initialize();
-  // XXX For now, start dimmer for powersave.
-//  strip.downBrightness();
-//  strip.downBrightness();
   // Start mode
   curMode = 0;
 }
@@ -273,7 +271,7 @@ void fillCol(uint8_t col, uint32_t color) {
 }
 
 mode_func modes[] = {
-//  &floater,
+  &floater,
   &colorMix,
   &wheelPlus,
   &blueSound,
@@ -330,19 +328,20 @@ float distance(float pos1, float pos2, float dimensionSize) {
 }
 
 void floater() {
-  // Cut speed to a range we care about.
-  speed %= 12;
-
   float xPos = WIDTH / 2.0;
   float yPos = HEIGHT / 2.0;
   float xIncrement;
   float yIncrement;
   int steps = 0;
 
-  float size = 4.0 + (speed % 2);
+  float size = 4.0;// + (speed % 2);
+  byte increment_max = 4;// * (speed % 3 + 1);
 
-  byte increment_max = 4 * (speed % 3 + 1);
-
+  // Start with random hue; some speeds use it.
+  long randHue = random(0, 256 * 6);
+  long hue = randHue;
+  byte sat = random(0, FULL);
+  byte val;
   while (mode_running) {
     // Render the spot.
     for (byte x = 0; x < WIDTH; x++) {
@@ -352,9 +351,30 @@ void floater() {
         float xDist = distance(x, xPos, WIDTH);
         float yDist = distance(y, yPos, HEIGHT);
         float dist = sqrt(xDist * xDist + yDist * yDist);
-        uint32_t color = hsv2rgb(0, FULL, 255 * (size - min(size, dist)) / size);
-//        color |= (uint32_t)(255.0 * (size - min(size, dist)) / size) << (BLUE - c) * 8;
-        nodeAt(x, y) = (speed > 5) ? ~color : color;
+        dist = (size - min(size, dist)) / size;
+        if (speed % 2) {
+          // Invert every other
+          dist = 1.0 - dist;
+        }
+        switch ((speed / 2) % 3) {
+        case 0:
+          // Deviate from random hue
+          hue = (randHue + long(dist * 384)) % (256 * 6);
+          sat = FULL;
+          val = FULL;
+          break;
+        case 1:
+          // Use random hue
+          sat = dist * FULL;
+          val = FULL;
+          break;
+        case 2:
+          // Use random hue
+          // Use random sat
+          val = dist * FULL;
+          break;
+        }
+        nodeAt(x, y) = hsv2rgb(hue, sat, val);
       }
     }
     showFor(1);
@@ -697,6 +717,7 @@ void b2interrupt() {
 // Center
 void b3interrupt() {
   if (outsideBounce()) {
+//    Serial.print("New brightness:");
     strip.downBrightness();
   }
 }
