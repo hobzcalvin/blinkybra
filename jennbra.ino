@@ -2,11 +2,13 @@
 // XXX: The LPD8806 library should successfully include this itself.
 #include "SPI.h"
 
+//#define BLACKHAT
+
 #define NO_PORTB_PINCHANGES // to indicate that port b will not be used for pin change interrupts
 #define NO_PORTC_PINCHANGES // to indicate that port c will not be used for pin change interrupts
-#define NO_PIN_STATE        // to indicate that you don't need the pinState
-#define NO_PIN_NUMBER       // to indicate that you don't need the arduinoPin
-#define DISABLE_PCINT_MULTI_SERVICE // to limit the handler to servicing a single interrupt per invocation.
+//#define NO_PIN_STATE        // to indicate that you don't need the pinState
+//#define NO_PIN_NUMBER       // to indicate that you don't need the arduinoPin
+//#define DISABLE_PCINT_MULTI_SERVICE // to limit the handler to servicing a single interrupt per invocation.
 #include "PinChangeInt.h"
 #include "TimerOne.h"
 #include "fix_fft.h"
@@ -27,6 +29,24 @@
 #define soundVPin A0
 #define soundPin A1
 
+#ifdef BLACKHAT
+#define WIDTH 20
+// -1 indicates no actual pixel at that virtual location.
+int8_t nodeLayout[] = {
+ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+};
+int8_t spectrumLayout[] = {
+  9, 8, 7, 6, 5, -1,
+  10, 11, 12, 13, 14, -1,
+  19, 18, 17, 16, 15, -1,
+  0, 1, 2, 3, 4, -1,
+};
+#define BANDS 4
+byte bandSizes[BANDS] = {
+ 1, 2, 2, 2
+};
+
+#else // Default to Jenn's bra
 #define WIDTH 12
 // -1 indicates no actual pixel at that virtual location.
 int8_t nodeLayout[] = {
@@ -38,15 +58,20 @@ int8_t nodeLayout[] = {
   -1, -1,  4, -1,  6, -1,   -1, 21, -1, 23, -1, -1,
   -1, -1, -1,  5, -1, -1,   -1, -1, 22, -1, -1, -1,
 };
-/*int8_t nodeLayout[] = {
-  -1,  1, -1, -1, -1, -1,  -1,  -1, -1, -1, -1, 27, -1,
-   0, -1, 10, -1, -1, -1,  -1,  -1, -1, -1, 17, -1, 26,
-  -1,  9, -1, 11, -1, -1,  -1,  -1, -1, 16, -1, 18, -1,
-   2, -1,  8, -1, 12, -1,  -1,  -1, 15, -1, 19, -1, 25,
-  -1,  3, -1,  7, -1, 13,  -1,  14, -1, 20, -1, 24, -1,
-  -1, -1,  4, -1,  6, -1,  -1,  -1, 21, -1, 23, -1, -1,
-  -1, -1, -1,  5, -1, -1,  -1,  -1, -1, 22, -1, -1, -1,
-};*/
+int8_t spectrumLayout[] = {
+   5,  4,  3,  2, -1,
+   6,  7,  8,  9,  0, -1,
+  13, 12, 11, 10,  1, -1,
+  14, 15, 16, 17, 27, -1,
+  21, 20, 19, 18, 26, -1,
+  22, 23, 24, 25, -1,
+};
+#define BANDS 6
+byte bandSizes[BANDS] = {
+ 1, 2, 2, 2, 2, 2
+// 1, 2, 10, 20, 20, 20
+};
+#endif
 
 
 #define numNodes (sizeof(nodeLayout) / sizeof(int8_t))
@@ -94,6 +119,21 @@ uint32_t COLORS[] = {
 LPD8806 strip = NULL;
 
 // PROTOTYPES
+void b0interrupt();
+void b1interrupt();
+void b2interrupt();
+void b3interrupt();
+void b4interrupt();
+void fillCol(uint8_t col, uint32_t color);
+void colorMix();
+void wheelPlus();
+void blueSound();
+void spectrum();
+void nightRide();
+void randDots();
+void headlights();
+void plainColors();
+void handleRandomTimer();
 byte gamma(byte x);
 long hsv2rgb(long h, byte s, byte v);
 
@@ -172,7 +212,7 @@ void setup() {
   // are 32 LEDs per meter but you can extend or cut the strip.  Next two
   // parameters are SPI data and clock pins:
   strip = LPD8806(realNumNodes, dataPin, clockPin);
-  Serial.begin(9600);
+//  Serial.begin(9600);
 
   int8_t tempLayout[numNodes];
   for (int i = 0; i < WIDTH; i++) {
@@ -233,6 +273,7 @@ void fillCol(uint8_t col, uint32_t color) {
 }
 
 mode_func modes[] = {
+//  &floater,
   &colorMix,
   &wheelPlus,
   &blueSound,
@@ -286,6 +327,52 @@ float distance(float pos1, float pos2, float dimensionSize) {
     distance = dimensionSize - distance;
   }
   return distance;
+}
+
+void floater() {
+  // Cut speed to a range we care about.
+  speed %= 12;
+
+  float xPos = WIDTH / 2.0;
+  float yPos = HEIGHT / 2.0;
+  float xIncrement;
+  float yIncrement;
+  int steps = 0;
+
+  float size = 4.0 + (speed % 2);
+
+  byte increment_max = 4 * (speed % 3 + 1);
+
+  while (mode_running) {
+    // Render the spot.
+    for (byte x = 0; x < WIDTH; x++) {
+      for (byte y = 0; y < HEIGHT; y++) {
+        // Don't render imaginary nodes; they take time.
+        if (imaginaryNode(x, y)) continue;
+        float xDist = distance(x, xPos, WIDTH);
+        float yDist = distance(y, yPos, HEIGHT);
+        float dist = sqrt(xDist * xDist + yDist * yDist);
+        uint32_t color = hsv2rgb(0, FULL, 255 * (size - min(size, dist)) / size);
+//        color |= (uint32_t)(255.0 * (size - min(size, dist)) / size) << (BLUE - c) * 8;
+        nodeAt(x, y) = (speed > 5) ? ~color : color;
+      }
+    }
+    showFor(1);
+
+    // Move the spot.
+    if (!steps) {
+      xIncrement = ((float)random(0, increment_max * 2) - increment_max) / 20.0;
+      yIncrement = ((float)random(0, increment_max * 2) - increment_max) / 20.0;
+      steps = random(10, 100);
+    }
+    xPos += xIncrement;
+    yPos += yIncrement;
+    while (xPos > WIDTH) xPos -= WIDTH;
+    while (yPos > HEIGHT) yPos -= HEIGHT;
+    while (xPos < 0) xPos += WIDTH;
+    while (yPos < 0) yPos += HEIGHT;
+    steps--;
+  }
 }
 
 #define RED 0
@@ -391,19 +478,6 @@ void blueSound() {
   }
 }
 
-int8_t spectrumLayout[] = {
-   5,  4,  3,  2, -1,
-   6,  7,  8,  9,  0, -1,
-  13, 12, 11, 10,  1, -1,
-  14, 15, 16, 17, 27, -1,
-  21, 20, 19, 18, 26, -1,
-  22, 23, 24, 25, -1,
-};
-#define BANDS 6
-byte bandSizes[BANDS] = {
- 1, 2, 2, 2, 2, 2
-// 1, 2, 10, 20, 20, 20
-};
 byte bandHeights[BANDS] = { 0 };
 void spectrum() {
   char im[128];
@@ -634,7 +708,6 @@ void b4interrupt() {
   }
 }
 void handleRandomTimer() {
-  Serial.println("handled");
   if (++timerDoubler >= 2) {
     mode_running = false;
   }
